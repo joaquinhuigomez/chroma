@@ -289,7 +289,6 @@ impl<T: Hash + ?Sized> BloomFilter<T> {
             _phantom: PhantomData,
         })
     }
-
 }
 
 impl<T: Hash + ?Sized> Weighted for BloomFilter<T> {
@@ -304,12 +303,24 @@ impl<T: Hash + ?Sized> Weighted for BloomFilter<T> {
 pub struct BloomFilterManagerConfig {
     #[serde(default)]
     pub cache_config: CacheConfig,
+    /// Minimum number of unique user IDs in a log batch before we fetch
+    /// the bloom filter from storage (if not already cached). Below this
+    /// threshold, blockfile lookups are cheap enough to not justify the fetch.
+    #[serde(default = "BloomFilterManagerConfig::default_storage_fetch_threshold")]
+    pub storage_fetch_threshold: usize,
+}
+
+impl BloomFilterManagerConfig {
+    fn default_storage_fetch_threshold() -> usize {
+        100
+    }
 }
 
 impl Default for BloomFilterManagerConfig {
     fn default() -> Self {
         Self {
             cache_config: CacheConfig::Nop,
+            storage_fetch_threshold: Self::default_storage_fetch_threshold(),
         }
     }
 }
@@ -317,6 +328,7 @@ impl Default for BloomFilterManagerConfig {
 struct BloomFilterManagerInner {
     cache: Box<dyn Cache<String, BloomFilter<str>>>,
     storage: Arc<Storage>,
+    storage_fetch_threshold: usize,
 }
 
 /// Manages a shared cache of bloom filter instances across queries.
@@ -345,6 +357,7 @@ impl Configurable<(BloomFilterManagerConfig, Storage)> for BloomFilterManager {
             inner: Arc::new(BloomFilterManagerInner {
                 cache,
                 storage: Arc::new(storage.clone()),
+                storage_fetch_threshold: manager_config.storage_fetch_threshold,
             }),
         })
     }
@@ -407,6 +420,16 @@ impl BloomFilterManager {
         Ok(bf)
     }
 
+    /// Returns the bloom filter only if it's already in the cache.
+    /// Does NOT fetch from storage. Near-zero cost.
+    pub async fn get_if_cached(&self, path: &str) -> Option<BloomFilter<str>> {
+        self.inner.cache.get(&path.to_string()).await.ok().flatten()
+    }
+
+    pub fn storage_fetch_threshold(&self) -> usize {
+        self.inner.storage_fetch_threshold
+    }
+
     /// Load an existing bloom filter and fork it for a new compaction cycle.
     /// Generates a fresh storage path under `prefix_path` for the new copy.
     pub async fn fork(
@@ -423,6 +446,8 @@ impl BloomFilterManager {
             inner: Arc::new(BloomFilterManagerInner {
                 cache: chroma_cache::new_non_persistent_cache_for_test(),
                 storage,
+                storage_fetch_threshold: BloomFilterManagerConfig::default_storage_fetch_threshold(
+                ),
             }),
         }
     }

@@ -3504,6 +3504,7 @@ mod tests {
         let reader = Box::pin(RecordSegmentReader::from_segment(
             &output_after_rebuild.record_segment,
             &test_segments.blockfile_provider,
+            None,
         ))
         .await
         .expect("Should create reader for output collection");
